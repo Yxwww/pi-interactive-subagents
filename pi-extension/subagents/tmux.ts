@@ -106,6 +106,69 @@ function rebalanceSurfaces(hintPane?: string): void {
 
 // ── Surface primitives ──
 
+// ── Pane labeling ──
+
+/**
+ * Border color per agent so subagent panes are identifiable at a glance.
+ * Known agents get a fixed color; unknown names fall back to a deterministic
+ * hash over a fixed palette so the same name always maps to the same color.
+ */
+const SUBAGENT_BORDER_COLORS: Record<string, string> = {
+  worker: "colour75", // blue
+  scout: "colour51", // cyan
+  researcher: "colour201", // magenta
+  reviewer: "colour220", // yellow
+  investigator: "colour208", // orange
+  "devils-advocate": "colour203", // red
+  oracle: "colour135", // purple
+};
+
+const SUBAGENT_COLOR_FALLBACK = [
+  "colour75",
+  "colour51",
+  "colour201",
+  "colour220",
+  "colour203",
+  "colour208",
+  "colour120",
+  "colour135",
+  "colour214",
+  "colour39",
+];
+
+function subagentBorderColor(name: string): string {
+  // Strip a uniqueRunningName dedup suffix ("worker-2" -> "worker") so
+  // same-type agents share a color.
+  const base = name.replace(/-\d+$/, "");
+  const known = SUBAGENT_BORDER_COLORS[base];
+  if (known) return known;
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return SUBAGENT_COLOR_FALLBACK[Math.abs(h) % SUBAGENT_COLOR_FALLBACK.length];
+}
+
+/**
+ * Mark a pane as a subagent surface: set its tmux title (rendered via
+ * `#{pane_title}` in `pane-border-format`) and a per-agent border color.
+ * Best-effort — a pane that already closed must never break spawning.
+ */
+function labelSurface(pane: string, name: string): void {
+  try {
+    execFileSync("tmux", ["select-pane", "-t", pane, "-T", name], { encoding: "utf8" });
+  } catch {
+    return; // pane may already be gone; title is cosmetic
+  }
+  try {
+    execFileSync(
+      "tmux",
+      ["set-option", "-p", "-t", pane, "pane-border-style", `fg=${subagentBorderColor(name)}`],
+      { encoding: "utf8" },
+    );
+  } catch {
+    // border color is cosmetic
+  }
+}
+
 /**
  * Create a new pane for a subagent: a right split off the parent pi's pane,
  * so new panes follow the agent rather than the user's focus.
@@ -114,7 +177,6 @@ function rebalanceSurfaces(hintPane?: string): void {
  * Returns the new pane id (e.g. `%12`).
  */
 export function createSurface(name: string): string {
-  void name; // tmux panes are not named; the pi process inside shows its own title.
   return createSurfaceSplit(name, "right", process.env.TMUX_PANE);
 }
 
@@ -127,7 +189,6 @@ export function createSurfaceSplit(
   direction: "left" | "right" | "up" | "down",
   fromSurface?: string,
 ): string {
-  void name;
   requireTmux();
 
   const args = ["split-window", "-d"];
@@ -148,6 +209,8 @@ export function createSurfaceSplit(
   if (!pane.startsWith("%")) {
     throw new Error(`Unexpected tmux split-window output: ${pane}`);
   }
+
+  if (name) labelSurface(pane, name);
 
   rebalanceSurfaces(pane);
   return pane;
